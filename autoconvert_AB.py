@@ -1,14 +1,23 @@
-
 import os
+import sys
 import shutil
 import traceback
-import re
 from difflib import SequenceMatcher as sm
 import tempfile
-from ffmpy import FFmpeg
+from ffmpy3 import FFmpeg
 import multiprocessing
+import argparse
 
-EXTENSIONS = (".flac", ".mp3", ".m4a", ".opus")
+# Bit of code for helping debugging by disabling parallel operations if a debugger is present
+PARALLEL = True
+gettrace = getattr(sys, 'gettrace', None)
+if gettrace is None:
+    pass
+elif gettrace():
+    PARALLEL = False
+
+EXTENSIONS = (".flac", ".mp3", ".m4a", ".opus", "m4b")
+single_extensions = ("flac", "mp3", "m4a", "m4b")
 
 
 def copy_recursive(src, dst, symlinks=False, ignore=None):
@@ -19,35 +28,6 @@ def copy_recursive(src, dst, symlinks=False, ignore=None):
             shutil.copytree(s, d, symlinks, ignore)
         else:
             shutil.copy2(s, d)
-
-
-def sort(in_list):
-    # Detect variable numbering
-    # ends_w_single_digit = re.compile("^.*\\d$")
-
-    # Check for ends with digit
-    single_digit = False
-    double_digit = False
-    # for item in in_list:
-    #     if item.endswith(".opus"):
-    #         if item[-6].isdigit():
-    #             single_digit = True
-    #         if item[-7:-5].isdigit():
-    #             double_digit = True
-    #         if single_digit and double_digit:
-    #             return in_list.sort(key=lambda numb: int(re.split('_|-', numb)[-6]))
-    #     else:
-    #         if item[-1].isdigit():
-    #             single_digit = True
-    #         if item[-2:].isdigit():
-    #             double_digit = True
-    #         if single_digit and double_digit:
-    #             return in_list.sort(key=lambda numb: int(re.split('_|-', numb)[-1]))
-
-    # I've tried everything
-    return sorted(in_list)
-
-
 
 
 def similar(a, b):
@@ -72,10 +52,14 @@ def build_ffmpeg_file_list(folder, temp_file):
         temp_list = build_full_path_from_list(folder, os.listdir(folder))
 
     # Check file type
-    temp_list = [f for f in temp_list if f.lower().endswith(EXTENSIONS)]
-
+    to_remove = []
+    for idx, f in enumerate(temp_list):
+        if not f.lower().endswith(EXTENSIONS):
+            to_remove.append(idx)
+    for idx in sorted(to_remove, reverse=True):
+        del temp_list[idx]
     # Try to put everything in order
-    temp_list = sort(temp_list)
+    temp_list = sorted(temp_list)
     # Write out to file
     for f in temp_list:
         temp_file.write("file '" + f + "'\n")
@@ -88,8 +72,8 @@ def process_single_file(f, return_list):
     out_file.append("opus")
     out_file = ".".join(out_file)
     converter = FFmpeg(
-        inputs={f: '-hide_banner -loglevel panic'},
-        outputs={out_file: '-ac 1 -c:a opus -b:a 55k -threads 4'}
+        inputs={f: None},
+        outputs={out_file: '-strict -2 -ac 1 -c:a opus -b:a 55k -threads 4'}
     )
 
     converter.run()
@@ -104,8 +88,8 @@ def process_folder(folder):
 
 
     converter = FFmpeg(
-        inputs={ffmpeg_file_list.name: '-hide_banner -loglevel panic -f concat -safe 0'},
-        outputs={output_file: '-ac 1 -c:a opus -b:a 55k -threads 4'}
+        inputs={ffmpeg_file_list.name: '-f concat -safe 0'},
+        outputs={output_file: '-strict -2 -ac 1 -c:a opus -b:a 55k -threads 4'}
     )
 
     converter.run()
@@ -131,7 +115,7 @@ def process_book_with_sub_folders(root):
     build_ffmpeg_file_list(files, ffmpeg_file_list)
 
     converter = FFmpeg(
-        inputs={ffmpeg_file_list.name: '-hide_banner -loglevel panic -f concat -safe 0'},
+        inputs={ffmpeg_file_list.name: '-f concat -safe 0'},
         outputs={output_file: '-c copy'}
     )
     converter.run()
@@ -158,14 +142,11 @@ def process_dir(working_dir, return_list=0):
 
             # Check similarity
             for dir in dirs:
-                # if similar(root_name, dir) > 0.4:
-                if True:
+                if similar(root_name, dir) > 0.4 or "CD" in dir:
                     # These are sub folders
                     multiple_books = False
-                    break
                 else:
                     print(dir, "   ", similar(root_name, dir))
-
             if not multiple_books:
                 out_file = process_book_with_sub_folders(root)
                 output_files.append(out_file)
@@ -181,17 +162,35 @@ def process_dir(working_dir, return_list=0):
             return_list += output_files
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description='Script for automating the conversion of audiobooks to opus.')
+    parser.add_argument("--workdir", dest="workdir", type=str, default='', help='Specifies the working directory for '
+                                                                                'this script. Not specifying this '
+                                                                                'parameter assumes the current working '
+                                                                                'directory.')
+    args = parser.parse_args()
+
+    if args.workdir != '' and not os.path.exists(args.workdir):
+        print("Cannot find working directory. This directory must exist and the desired files to convert should be there.")
+        sys.exit()
+    return args
+
 def main():
-    work_folder = "/run/user/1000/gvfs/smb-share:server=freenas,share=generalshare/Media/Audiobooks/Raw/convert/Run1"
-    # work_folder = os.getcwd()
+    args = parse_args()
+    if args.workdir != '':
+        work_folder = args.workdir
+    else:
+        work_folder = os.getcwd()
     working_dir_listing = os.listdir(work_folder)
     failed_to_process = []
     output_files = []
+    jobs = []
 
     # Setup parallelism
-    manager = multiprocessing.Manager()
-    return_list = manager.list()
-    jobs = []
+    if __name__ == "__main__" and PARALLEL:
+        manager = multiprocessing.Manager()
+        return_list = manager.list()
+
 
     for idx, dir in enumerate(working_dir_listing):
         working_dir_listing[idx] = os.path.join(work_folder, dir)
@@ -201,29 +200,44 @@ def main():
         try:
             output_dir = os.path.join(work_folder, "done")
             os.mkdir(output_dir)
-        except (FileExistsError, OSError):
+        except:
             pass
 
         for dir in working_dir_listing:
             os.rename(dir, dir.replace(' ', '_').replace("'", ""))
 
             if os.path.isdir(dir):
-                # output_files += process_dir(dir)
-                p = multiprocessing.Process(target=process_dir, args=(dir, return_list))
-                jobs.append([p, dir])
-                p.start()
-            else:
-                if os.path.isfile(dir) and (dir.lower().endswith(".m4a") or dir.lower().endswith(".mp3") or dir.lower().endswith(".flac")):
-                    # out_file = process_single_file(dir)
-                    p = multiprocessing.Process(target=process_single_file, args=(dir, return_list))
-                    jobs.append([p, dir])
+                if PARALLEL:
+                    p = multiprocessing.Process(target=process_dir, args=(dir, return_list))
+                    jobs.append(p)
                     p.start()
-        # Finalize parallel jobs
-        for proc, dir in jobs:
-            proc.join()
-            print("Finished: ", dir.split("/")[-1])
-        output_files += return_list
+                else:
+                    output_files += process_dir(dir)
+            #Process single files that are left
+            else:
+                extension = dir.lower().split(".")[-1]
+                if os.path.isfile(dir) and extension in single_extensions:
+                    if PARALLEL:
+                        p = multiprocessing.Process(target=process_single_file, args=(dir, return_list))
+                        jobs.append(p)
+                        p.start()
+                    else:
+                        out_file = process_single_file(dir)
+        if PARALLEL:
+            # Finalize parallel jobs
+            for proc in jobs:
+                proc.join()
+            output_files += return_list
 
+        # Move files to done dir
+
+        for of in output_files:
+            try:
+                if os.path.exists(of):
+                    shutil.move(of, output_dir)
+            except Exception:
+                print(traceback.format_exc())
+                failed_to_process.append(dir)
 
     except Exception:
         print(traceback.format_exc())
