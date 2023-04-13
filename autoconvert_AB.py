@@ -13,7 +13,7 @@ PARALLEL = True
 gettrace = getattr(sys, 'gettrace', None)
 if gettrace is None:
     pass
-elif gettrace():
+elif gettrace():  # This is true if we have a debugger attached
     PARALLEL = False
 
 EXTENSIONS = (".flac", ".mp3", ".m4a", ".opus", "m4b")
@@ -31,6 +31,7 @@ def copy_recursive(src, dst, symlinks=False, ignore=None):
 
 
 def similar(a, b):
+    # Get a ratio of how similar two strings are
     return sm(None, a, b).ratio()
 
 
@@ -81,6 +82,7 @@ def process_single_file(f, return_list):
 
 
 def process_folder(folder):
+    # For a folder you have to build a text file that has a list of all the files you want to create to provide to ffmpeg
     ffmpeg_file_list = tempfile.NamedTemporaryFile(mode='w+t')
     output_file = folder + ".opus"
 
@@ -99,8 +101,11 @@ def process_folder(folder):
 
 
 def process_book_with_sub_folders(root):
-    # Assume we are good from here
-    # process lower folders first
+    ''' 
+    For dealing with subfolders create an opus of the individual files and then we'll concatinate the opus
+    This typically happens with CDs of mp3s, so there will be a single opus for each cd that we'll then concatenate 
+    together to build the whole book
+    '''
     dirs = build_full_path_from_list(root, os.listdir(root))
     source_dir = []
     # Remove everything that isn't a directory (doesn't support mixed setup)
@@ -140,7 +145,7 @@ def process_dir(working_dir, return_list=0):
                 os.rename(dir, dir.replace(' ', '_').replace("'", ""))
             dirs = os.listdir(root)
 
-            # Check similarity
+            # Check similarity to see if we have CDs or something
             for dir in dirs:
                 if similar(root_name, dir) > 0.4 or "CD" in dir:
                     # These are sub folders
@@ -191,7 +196,7 @@ def main():
         manager = multiprocessing.Manager()
         return_list = manager.list()
 
-
+    # Build full path of files we are processing
     for idx, dir in enumerate(working_dir_listing):
         working_dir_listing[idx] = os.path.join(work_folder, dir)
     print(working_dir_listing)
@@ -202,7 +207,7 @@ def main():
             os.mkdir(output_dir)
         except:
             pass
-
+        # This handles some issues with ffmpeg, it doesn't like spaces or apostrophes
         for dir in working_dir_listing:
             os.rename(dir, dir.replace(' ', '_').replace("'", ""))
 
@@ -230,7 +235,6 @@ def main():
             output_files += return_list
 
         # Move files to done dir
-
         for of in output_files:
             try:
                 if os.path.exists(of):
@@ -243,7 +247,8 @@ def main():
         print(traceback.format_exc())
     finally:
         # Cleanup
-        # os.removedirs(temp_dir)
+        os.removedirs(temp_dir)
+        # print out if we've had any issues
         print("Failed to process: ", failed_to_process)
 
 if __name__ == "__main__":
